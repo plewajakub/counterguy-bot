@@ -4,12 +4,12 @@ import { promisify } from 'util';
 
 let _db: any;
 
-export async function init(filename = './voice_data.db') {
-  if (filename !== ':memory:' && fs.existsSync(filename)) {
+export async function init(filename: string, opts?: { backupOnStart?: boolean }) {
+  if (filename !== ':memory:' && opts?.backupOnStart && fs.existsSync(filename)) {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const backupFilename = `${filename}.backup.${timestamp}`;
-    fs.renameSync(filename, backupFilename);
-    console.log(`Backed up old database to ${backupFilename}`);
+    fs.copyFileSync(filename, backupFilename);
+    console.log(`Backed up database to ${backupFilename}`);
   }
 
   _db = new sqlite3.Database(filename);

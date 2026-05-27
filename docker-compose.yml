@@ -1,0 +1,15 @@
+services:
+  counterguy-bot:
+    build: .
+    container_name: counterguy-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Persist DB in a mounted volume (overrideable via .env)
+      DB_FILE: ${DB_FILE:-/data/voice_data.db}
+    volumes:
+      - counterguy_data:/data
+
+volumes:
+  counterguy_data:

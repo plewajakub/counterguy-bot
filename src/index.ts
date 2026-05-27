@@ -31,7 +31,11 @@ async function registerEvents() {
 }
 
 async function start() {
-  await db.init();
+  const dbFile = process.env.DB_FILE || './voice_data.db';
+  const backupOnStart =
+    (process.env.DB_BACKUP_ON_START || '').toLowerCase() === '1' ||
+    (process.env.DB_BACKUP_ON_START || '').toLowerCase() === 'true';
+  await db.init(dbFile, { backupOnStart });
   await registerEvents();
 
   // Register slash commands if CLIENT_ID and GUILD_ID are provided
