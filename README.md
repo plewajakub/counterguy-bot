@@ -30,3 +30,9 @@ Development
 Notes
 - The project stores data in `voice_data.db` in the project folder.
 - Do NOT commit your `.env` with the bot token. Keep it secret.
+
+Slash command usage
+- `/voicetime leaderboard` — show top users by voice category.
+- `/voicetime user target:@User` — show detailed stats for a user.
+- Use the buttons under the user embed to switch between `today`, `week`, `month`, `year`, and `total`.
+- Optionally set the range directly: `/voicetime user target:@User range:today`.

@@ -30,7 +30,7 @@ describe('db module', () => {
   test('endSessionAndAdd closes existing session and adds minutes', async () => {
     await db.init(':memory:');
     const now = Date.now();
-    await db.upsertSession('u2', 'A', now - 65 * 60000, false, false, false);
+    await db.upsertSession('u2', null, 'A', now - 65 * 60000, false, false, false);
     await db.endSessionAndAdd('u2', 'User2#0002');
 
     const rows = await db.getTop('total');
@@ -40,7 +40,7 @@ describe('db module', () => {
   test('updateSessionState records previous state time and updates session flags', async () => {
     await db.init(':memory:');
     const now = Date.now();
-    await db.upsertSession('u3', 'A', now - 70 * 60000, false, false, false);
+    await db.upsertSession('u3', null, 'A', now - 70 * 60000, false, false, false);
     await db.updateSessionState('u3', 'User3#0003', true, false, false);
 
     const total = await db.getTop('total');
@@ -51,5 +51,21 @@ describe('db module', () => {
 
     const session = await db.getSession('u3');
     expect(session.is_muted).toBe(1);
+  });
+
+  test('getUserStats returns range totals, average, and last seen', async () => {
+    await db.init(':memory:');
+    const now = Date.now();
+    await db.upsertSession('u4', null, 'A', now - 90 * 60000, false, false, false);
+    await db.endSessionAndAdd('u4', 'User4#0004');
+    await db.upsertSession('u4', null, 'A', now - 50 * 60000, false, false, false);
+    await db.endSessionAndAdd('u4', 'User4#0004');
+
+    const stats = await db.getUserStats('u4', 'week');
+    expect(stats.totalMinutes).toBeGreaterThanOrEqual(140);
+    expect(stats.daysCount).toBeGreaterThanOrEqual(1);
+    expect(stats.averageMinutes).toBeGreaterThanOrEqual(70);
+    expect(stats.lastSeen).toBeGreaterThan(0);
+    expect(stats.maxDayMinutes).toBeGreaterThanOrEqual(90);
   });
 });

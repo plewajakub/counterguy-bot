@@ -18,7 +18,8 @@ const client = new Client({
 
 async function registerEvents() {
   const eventsPath = path.join(__dirname, 'events');
-  const files = fs.readdirSync(eventsPath).filter((f) => f.endsWith('.ts') || f.endsWith('.js'));
+  const extension = path.extname(__filename);
+  const files = fs.readdirSync(eventsPath).filter((f) => f.endsWith(extension));
   for (const file of files) {
     // use dynamic import compatible with ts-node-dev / compiled output
     // eslint-disable-next-line @typescript-eslint/no-var-requires

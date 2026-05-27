@@ -27,7 +27,7 @@ describe('voiceStateUpdate', () => {
     await processVoiceStateUpdate(oldState, newState, { client: null, db });
 
     expect(db.endSessionAndAdd).toHaveBeenCalledWith('123', 'User#0001');
-    expect(db.upsertSession).toHaveBeenCalledWith('123', 'B', expect.any(Number), false, false, true);
+    expect(db.upsertSession).toHaveBeenCalledWith('123', null, 'B', expect.any(Number), false, false, true);
   });
 
   test('join starts a new session', async () => {
@@ -37,7 +37,7 @@ describe('voiceStateUpdate', () => {
 
     await processVoiceStateUpdate(oldState, newState, { client: null, db });
 
-    expect(db.upsertSession).toHaveBeenCalledWith('123', 'A', expect.any(Number), true, false, true);
+    expect(db.upsertSession).toHaveBeenCalledWith('123', null, 'A', expect.any(Number), true, false, true);
   });
 
   test('leave ends session and adds minutes', async () => {
