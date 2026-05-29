@@ -1,5 +1,5 @@
 const { convertMinutesToHours, capitalizeFirstLetter } =
-  require('../dist/utils') || require('../src/utils');
+  require('../src/utils');
 
 describe('utils', () => {
   test('convertMinutesToHours formats minutes correctly', () => {
