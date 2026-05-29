@@ -11,42 +11,53 @@ describe('db module', () => {
     expect(rows).toEqual([]);
   });
 
-  test('addMinutesToUser increments totals correctly', async () => {
+  test('addMinutesToUser increments totals correctly per guild', async () => {
     await db.init(':memory:');
-    await db.addMinutesToUser('u1', 'User1#0001', 5, true, false, false);
-    await db.addMinutesToUser('u1', 'User1#0001', 10, false, true, false);
+    await db.addMinutesToUser('u1', 'User1#0001', 5, true, false, false, 'guild1');
+    await db.addMinutesToUser('u1', 'User1#0001', 10, false, true, false, 'guild1');
 
-    const rows = await db.getTop('total');
+    // same guild -> accumulates
+    let rows = await db.getTop('total', 20, 'guild1');
     expect(rows).toHaveLength(1);
     expect(rows[0].time).toBe(15);
 
-    const muted = await db.getTop('muted');
+    let muted = await db.getTop('muted', 20, 'guild1');
     expect(muted[0].time).toBe(5);
 
-    const deaf = await db.getTop('deaf');
+    let deaf = await db.getTop('deaf', 20, 'guild1');
     expect(deaf[0].time).toBe(10);
+
+    // different guild -> separate record
+    await db.addMinutesToUser('u1', 'User1#0001', 20, false, false, false, 'guild2');
+    rows = await db.getTop('total', 20, 'guild2');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].time).toBe(20);
+
+    // global leaderboard sees both
+    rows = await db.getTop('total', 20);
+    expect(rows).toHaveLength(2);
   });
 
   test('endSessionAndAdd closes existing session and adds minutes', async () => {
     await db.init(':memory:');
     const now = Date.now();
-    await db.upsertSession('u2', null, 'A', now - 65 * 60000, false, false, false);
+    await db.upsertSession('u2', 'guild1', 'A', now - 65 * 60000, false, false, false);
     await db.endSessionAndAdd('u2', 'User2#0002');
 
-    const rows = await db.getTop('total');
+    const rows = await db.getTop('total', 20, 'guild1');
     expect(rows[0].time).toBeGreaterThanOrEqual(65);
   });
 
   test('updateSessionState records previous state time and updates session flags', async () => {
     await db.init(':memory:');
     const now = Date.now();
-    await db.upsertSession('u3', null, 'A', now - 70 * 60000, false, false, false);
+    await db.upsertSession('u3', 'guild1', 'A', now - 70 * 60000, false, false, false);
     await db.updateSessionState('u3', 'User3#0003', true, false, false);
 
-    const total = await db.getTop('total');
+    const total = await db.getTop('total', 20, 'guild1');
     expect(total[0].time).toBeGreaterThanOrEqual(70);
 
-    const muted = await db.getTop('muted');
+    const muted = await db.getTop('muted', 20, 'guild1');
     expect(muted).toEqual([]);
 
     const session = await db.getSession('u3');
@@ -56,16 +67,37 @@ describe('db module', () => {
   test('getUserStats returns range totals, average, and last seen', async () => {
     await db.init(':memory:');
     const now = Date.now();
-    await db.upsertSession('u4', null, 'A', now - 90 * 60000, false, false, false);
+    await db.upsertSession('u4', 'guild1', 'A', now - 90 * 60000, false, false, false);
     await db.endSessionAndAdd('u4', 'User4#0004');
-    await db.upsertSession('u4', null, 'A', now - 50 * 60000, false, false, false);
+    await db.upsertSession('u4', 'guild1', 'A', now - 50 * 60000, false, false, false);
     await db.endSessionAndAdd('u4', 'User4#0004');
 
-    const stats = await db.getUserStats('u4', 'week');
+    const stats = await db.getUserStats('u4', 'week', 'guild1');
     expect(stats.totalMinutes).toBeGreaterThanOrEqual(140);
     expect(stats.daysCount).toBeGreaterThanOrEqual(1);
     expect(stats.averageMinutes).toBeGreaterThanOrEqual(70);
     expect(stats.lastSeen).toBeGreaterThan(0);
     expect(stats.maxDayMinutes).toBeGreaterThanOrEqual(90);
+  });
+
+  test('getTop filters by guild', async () => {
+    await db.init(':memory:');
+    await db.addMinutesToUser('u1', 'User1#0001', 10, false, false, false, 'guild1');
+    await db.addMinutesToUser('u2', 'User2#0002', 20, false, false, false, 'guild2');
+    await db.addMinutesToUser('u1', 'User1#0001', 30, false, false, false, 'guild2');
+
+    // Only guild1 records
+    const g1 = await db.getTop('total', 20, 'guild1');
+    expect(g1).toHaveLength(1);
+    expect(g1[0].user_id).toBe('u1');
+    expect(g1[0].time).toBe(10);
+
+    // Only guild2 records
+    const g2 = await db.getTop('total', 20, 'guild2');
+    expect(g2).toHaveLength(2);
+
+    // All records (no guild filter)
+    const all = await db.getTop('total', 20);
+    expect(all).toHaveLength(3);
   });
 });

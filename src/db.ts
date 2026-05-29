@@ -19,14 +19,15 @@ export async function init(filename: string, opts?: { backupOnStart?: boolean })
 
   await _db.runAsync(`
     CREATE TABLE IF NOT EXISTS voice_data (
-      user_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
       nickname TEXT,
-      guild_id TEXT,
+      guild_id TEXT NOT NULL,
       total_time INTEGER DEFAULT 0,
       muted_time INTEGER DEFAULT 0,
       deafened_time INTEGER DEFAULT 0,
       alone_time INTEGER DEFAULT 0,
-      active_time INTEGER DEFAULT 0
+      active_time INTEGER DEFAULT 0,
+      PRIMARY KEY (user_id, guild_id)
     )
   `);
 
@@ -106,12 +107,13 @@ export async function addMinutesToUser(
   const aloneInc = isAlone ? minutes : 0;
   const activeInc = !isMuted && !isDeaf && !isAlone ? minutes : 0;
 
+  const resolvedGuildId = guildId || '__global__';
+
   await _db.runAsync(
     `INSERT INTO voice_data (user_id, nickname, guild_id, total_time, muted_time, deafened_time, alone_time, active_time)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(user_id) DO UPDATE SET
+     ON CONFLICT(user_id, guild_id) DO UPDATE SET
        nickname = excluded.nickname,
-       guild_id = excluded.guild_id,
        total_time = voice_data.total_time + excluded.total_time,
        muted_time = voice_data.muted_time + excluded.muted_time,
        deafened_time = voice_data.deafened_time + excluded.deafened_time,
@@ -119,7 +121,7 @@ export async function addMinutesToUser(
        active_time = voice_data.active_time + excluded.active_time`,
     userId,
     nickname,
-    guildId || null,
+    resolvedGuildId,
     totalInc,
     mutedInc,
     deafInc,
@@ -161,7 +163,15 @@ export async function endSessionAndAdd(userId: string, nickname: string) {
   const deltaMs = now - session.last_updated_at;
   const minutes = Math.floor(deltaMs / 60000);
   if (minutes > 0) {
-    await addMinutesToUser(userId, nickname, minutes, !!session.is_muted, !!session.is_deaf, !!session.is_alone, session.guild_id);
+    await addMinutesToUser(
+      userId,
+      nickname,
+      minutes,
+      !!session.is_muted,
+      !!session.is_deaf,
+      !!session.is_alone,
+      session.guild_id
+    );
   }
   const durationMinutes = Math.floor((now - session.started_at) / 60000);
   await archiveSessionRecord(
@@ -191,7 +201,15 @@ export async function updateSessionState(
     const deltaMs = now - session.last_updated_at;
     const minutes = Math.floor(deltaMs / 60000);
     if (minutes > 0) {
-      await addMinutesToUser(userId, nickname, minutes, !!session.is_muted, !!session.is_deaf, !!session.is_alone, session.guild_id);
+      await addMinutesToUser(
+        userId,
+        nickname,
+        minutes,
+        !!session.is_muted,
+        !!session.is_deaf,
+        !!session.is_alone,
+        session.guild_id
+      );
     }
   }
 
@@ -209,7 +227,7 @@ export async function updateSessionState(
   );
 }
 
-export async function getTop(category: string, limit = 20) {
+export async function getTop(category: string, limit = 20, guildId: string | null = null) {
   const col = (() => {
     switch ((category || '').toLowerCase()) {
       case 'total':
@@ -227,7 +245,17 @@ export async function getTop(category: string, limit = 20) {
     }
   })();
 
-  return _db.allAsync(`SELECT user_id, nickname, ${col} as time FROM voice_data WHERE ${col} > 0 ORDER BY ${col} DESC LIMIT ?`, limit);
+  const params: any[] = [limit];
+  let whereClause = `WHERE ${col} > 0`;
+  if (guildId) {
+    whereClause += ' AND guild_id = ?';
+    params.unshift(guildId);
+  }
+
+  return _db.allAsync(
+    `SELECT user_id, nickname, ${col} as time FROM voice_data ${whereClause} ORDER BY ${col} DESC LIMIT ?`,
+    params
+  );
 }
 
 function getRangeStartTimestamp(range: string): number {
@@ -249,7 +277,11 @@ function getRangeStartTimestamp(range: string): number {
   }
 }
 
-export async function getUserRangeTotal(userId: string, range: string, guildId: string | null = null) {
+export async function getUserRangeTotal(
+  userId: string,
+  range: string,
+  guildId: string | null = null
+) {
   const params: any[] = [userId];
   let query = `SELECT COALESCE(SUM(duration_minutes), 0) AS total FROM voice_sessions_history WHERE user_id = ?`;
 
@@ -267,7 +299,11 @@ export async function getUserRangeTotal(userId: string, range: string, guildId: 
   return _db.getAsync(query, ...params);
 }
 
-export async function getUserDailyAggregate(userId: string, range: string, guildId: string | null = null) {
+export async function getUserDailyAggregate(
+  userId: string,
+  range: string,
+  guildId: string | null = null
+) {
   const params: any[] = [userId];
   let query = `SELECT strftime('%Y-%m-%d', ended_at / 1000, 'unixepoch') AS day, SUM(duration_minutes) AS total FROM voice_sessions_history WHERE user_id = ?`;
 
@@ -321,6 +357,36 @@ export async function getUserStats(userId: string, range: string, guildId: strin
     maxDayMinutes,
     lastSeen,
   };
+}
+
+export async function getUserCategoryBreakdown(
+  userId: string,
+  range: string,
+  guildId: string | null = null
+) {
+  const params: any[] = [userId];
+  let query = `
+    SELECT 
+      COALESCE(SUM(CASE WHEN is_muted = 1 THEN duration_minutes ELSE 0 END), 0) AS muted_time,
+      COALESCE(SUM(CASE WHEN is_deaf = 1 THEN duration_minutes ELSE 0 END), 0) AS deafened_time,
+      COALESCE(SUM(CASE WHEN is_alone = 1 THEN duration_minutes ELSE 0 END), 0) AS alone_time,
+      COALESCE(SUM(CASE WHEN is_muted = 0 AND is_deaf = 0 AND is_alone = 0 THEN duration_minutes ELSE 0 END), 0) AS active_time,
+      COALESCE(SUM(duration_minutes), 0) AS total_time
+    FROM voice_sessions_history WHERE user_id = ?
+  `;
+
+  if (range !== 'total') {
+    const start = getRangeStartTimestamp(range);
+    query += ' AND ended_at BETWEEN ? AND ?';
+    params.push(start, Date.now());
+  }
+
+  if (guildId) {
+    query += ' AND guild_id = ?';
+    params.push(guildId);
+  }
+
+  return _db.getAsync(query, ...params);
 }
 
 export async function getSessionHistory(userId: string, limit = 10) {

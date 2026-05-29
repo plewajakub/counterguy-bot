@@ -22,10 +22,10 @@ async function registerEvents() {
   const files = fs.readdirSync(eventsPath).filter((f) => f.endsWith(extension));
   for (const file of files) {
     // use dynamic import compatible with ts-node-dev / compiled output
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const eventModule = require(path.join(eventsPath, file));
     const event = eventModule.default || eventModule;
-    if (event.once) client.once(event.name, (...args: any[]) => event.execute(...args, { client, db }));
+    if (event.once)
+      client.once(event.name, (...args: any[]) => event.execute(...args, { client, db }));
     else client.on(event.name, (...args: any[]) => event.execute(...args, { client, db }));
   }
 }
@@ -45,10 +45,11 @@ async function start() {
   if (clientId && guildId && token) {
     try {
       const commandsPath = path.join(__dirname, 'commands');
-      const commandFiles = fs.existsSync(commandsPath) ? fs.readdirSync(commandsPath).filter((f) => f.endsWith('.ts') || f.endsWith('.js')) : [];
+      const commandFiles = fs.existsSync(commandsPath)
+        ? fs.readdirSync(commandsPath).filter((f) => f.endsWith('.ts') || f.endsWith('.js'))
+        : [];
       const commands: any[] = [];
       for (const file of commandFiles) {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
         const cmdModule = require(path.join(commandsPath, file));
         const cmd = cmdModule.default || cmdModule;
         const data = cmd.data?.toJSON ? cmd.data.toJSON() : cmd.data;

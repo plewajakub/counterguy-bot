@@ -13,7 +13,30 @@ describe('integration: multiple users scenarios', () => {
     // Simulate user X: 30min in A then 60min in B
     await db.upsertSession('x', null, 'A', now - (30 + 60) * 60000, false, false, false);
     // switch to B -> endSessionAndAdd should add 30
-    await processVoiceStateUpdate({ id: 'x', channelId: 'A', member: { user: { tag: 'X#0001' } }, selfMute: false, selfDeaf: false, channel: { members: new Map([['x', {}], ['z', {}]]) } }, { id: 'x', channelId: 'B', member: { user: { tag: 'X#0001' } }, selfMute: false, selfDeaf: false, channel: { members: new Map([['x', {}]]) } }, { client: null, db });
+    await processVoiceStateUpdate(
+      {
+        id: 'x',
+        channelId: 'A',
+        member: { user: { tag: 'X#0001' } },
+        selfMute: false,
+        selfDeaf: false,
+        channel: {
+          members: new Map([
+            ['x', {}],
+            ['z', {}],
+          ]),
+        },
+      },
+      {
+        id: 'x',
+        channelId: 'B',
+        member: { user: { tag: 'X#0001' } },
+        selfMute: false,
+        selfDeaf: false,
+        channel: { members: new Map([['x', {}]]) },
+      },
+      { client: null, db }
+    );
     // Manually set session start for B to 60 minutes ago
     await db.upsertSession('x', null, 'B', now - 60 * 60000, false, false, false);
     await db.endSessionAndAdd('x', 'X#0001');

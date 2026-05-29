@@ -26,7 +26,15 @@ export async function processVoiceStateUpdate(oldState: any, newState: any, { cl
       const isDeaf = !!newState.selfDeaf;
       const isAlone = newState.channel?.members.size === 1;
       const guildId = newState.guild?.id || newState.channel?.guild?.id || null;
-      await db.upsertSession(userId, guildId, newState.channelId, Date.now(), isMuted, isDeaf, isAlone);
+      await db.upsertSession(
+        userId,
+        guildId,
+        newState.channelId,
+        Date.now(),
+        isMuted,
+        isDeaf,
+        isAlone
+      );
       await updateChannelMembers(newState.channel, userId, db);
       return;
     }
@@ -45,7 +53,15 @@ export async function processVoiceStateUpdate(oldState: any, newState: any, { cl
       const isDeaf = !!newState.selfDeaf;
       const isAlone = newState.channel?.members.size === 1;
       const guildId = newState.guild?.id || newState.channel?.guild?.id || null;
-      await db.upsertSession(userId, guildId, newState.channelId, Date.now(), isMuted, isDeaf, isAlone);
+      await db.upsertSession(
+        userId,
+        guildId,
+        newState.channelId,
+        Date.now(),
+        isMuted,
+        isDeaf,
+        isAlone
+      );
       await updateChannelMembers(oldState.channel, userId, db);
       await updateChannelMembers(newState.channel, userId, db);
       return;
