@@ -1,0 +1,77 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  test-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 18
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Prune dev dependencies
+        run: npm prune --production
+
+      - name: Package build
+        run: |
+          tar -czf counterguy-alpine.tgz \
+            dist/ \
+            node_modules/ \
+            package.json \
+            package-lock.json \
+            .env.example
+
+      - name: Upload to VPS
+        uses: appleboy/scp-action@v0.1.4
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          port: ${{ secrets.VPS_PORT }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: 'counterguy-alpine.tgz'
+          target: '${{ secrets.VPS_PATH }}'
+          strip_components: 0
+
+      - name: Deploy on VPS
+        uses: appleboy/ssh-action@v0.1.5
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          port: ${{ secrets.VPS_PORT }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd ${{ secrets.VPS_PATH }}
+
+            # Backup database
+            if [ -f ${{ secrets.DB_PATH }} ]; then
+              cp ${{ secrets.DB_PATH }} ${{ secrets.DB_PATH }}.backup.$(date -I)
+              echo "Database backed up"
+            fi
+
+            # Extract new build
+            tar -xzf counterguy-alpine.tgz
+            echo "Build extracted"
+
+            # Restart bot
+            pm2 restart counterguy 2>/dev/null || pm2 start dist/index.js --name counterguy
+            pm2 save
+            echo "Bot restarted"
+
+            # Cleanup
+            rm -f counterguy-alpine.tgz
+            echo "Cleanup done"

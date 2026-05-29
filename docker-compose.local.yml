@@ -1,4 +1,0 @@
-services:
-  counterguy-bot:
-    build: .
-    image: ${IMAGE:-counterguy-bot:local}

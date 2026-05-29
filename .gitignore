@@ -1,5 +1,6 @@
 node_modules/
 .env
+scripts/deploy.env
 voice_data.db
 voice_data.db.backup.*
 .DS_Store
