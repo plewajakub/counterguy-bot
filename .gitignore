@@ -7,3 +7,4 @@ npm-debug.log
 *.swp
 nohup.out
 dist/
+counterguy-alpine.tgz

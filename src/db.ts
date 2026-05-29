@@ -282,7 +282,7 @@ export async function getUserDailyAggregate(userId: string, range: string, guild
     params.push(guildId);
   }
 
-  query += ' GROUP BY day';
+  query += ' GROUP BY day HAVING SUM(duration_minutes) > 0';
   return _db.allAsync(query, ...params);
 }
 

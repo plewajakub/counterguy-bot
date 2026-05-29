@@ -12,7 +12,7 @@ RUN apt-get update \
 # Avoid pulling a prebuilt sqlite3 binary that can mismatch GLIBC.
 # Build native deps from source inside the image.
 ENV npm_config_build_from_source=true
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci
 
 COPY tsconfig.json ./
 COPY src ./src

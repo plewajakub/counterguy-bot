@@ -1,6 +1,6 @@
 services:
   counterguy-bot:
-    build: .
+    image: ${IMAGE:-counterguy-bot:local}
     container_name: counterguy-bot
     restart: unless-stopped
     env_file:
@@ -8,6 +8,8 @@ services:
     environment:
       # Persist DB in a mounted volume (overrideable via .env)
       DB_FILE: ${DB_FILE:-/data/voice_data.db}
+      # Keep Node memory bounded on tiny VPSes
+      NODE_OPTIONS: ${NODE_OPTIONS:---max-old-space-size=128}
     volumes:
       - counterguy_data:/data
 
