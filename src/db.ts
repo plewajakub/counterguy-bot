@@ -5,7 +5,6 @@ import { promisify } from 'util';
 let _db: any;
 
 async function migrateVoiceData() {
-  // Check if voice_data has OLD schema (single-column PK)
   const tableInfo: any[] = await _db.allAsync(`PRAGMA table_info(voice_data)`);
   const pkColumns = tableInfo.filter((col: any) => col.pk > 0);
   const isOldSchema = pkColumns.length === 1 && pkColumns[0].name === 'user_id';
@@ -14,14 +13,13 @@ async function migrateVoiceData() {
 
   console.log('Migrating voice_data schema from old format...');
 
-  // Delete rows with missing guild_id (they would break the new composite PK)
-  await _db.runAsync(`DELETE FROM voice_data WHERE guild_id IS NULL`);
+  await _db.runAsync(`UPDATE voice_data SET guild_id = '__global__' WHERE guild_id IS NULL`);
 
   await _db.runAsync(`
     CREATE TABLE voice_data_new (
       user_id TEXT NOT NULL,
       nickname TEXT,
-      guild_id TEXT NOT NULL,
+      guild_id TEXT NOT NULL DEFAULT '__global__',
       total_time INTEGER DEFAULT 0,
       muted_time INTEGER DEFAULT 0,
       deafened_time INTEGER DEFAULT 0,
@@ -77,7 +75,6 @@ export async function init(filename: string, opts?: { backupOnStart?: boolean })
     )
   `);
 
-  // Migrate old voice_data schema if needed (single-column PK → composite PK)
   await migrateVoiceData();
 
   await _db.runAsync(`
@@ -94,7 +91,6 @@ export async function init(filename: string, opts?: { backupOnStart?: boolean })
     )
   `);
 
-  // Add game_name column to old voice_sessions if missing
   await ensureColumn('voice_sessions', 'game_name', 'TEXT');
 
   await _db.runAsync(`
@@ -113,7 +109,6 @@ export async function init(filename: string, opts?: { backupOnStart?: boolean })
     )
   `);
 
-  // Add game_name column to old voice_sessions_history if missing
   await ensureColumn('voice_sessions_history', 'game_name', 'TEXT');
 
   await _db.runAsync(`
@@ -238,7 +233,7 @@ async function archiveSessionRecord(
 
 async function updateStreak(userId: string, guildId: string | null) {
   if (!guildId) return;
-  const today = new Date().toISOString().split('T')[0]; // 'YYYY-MM-DD'
+  const today = new Date().toISOString().split('T')[0];
 
   const row = await _db.getAsync(
     `SELECT current_streak, longest_streak, last_active_date FROM voice_streaks WHERE user_id = ? AND guild_id = ?`,
@@ -257,7 +252,6 @@ async function updateStreak(userId: string, guildId: string | null) {
   }
 
   if (row.last_active_date === today) {
-    // Already counted today, do nothing
     return;
   }
 
@@ -284,19 +278,10 @@ export async function endSessionAndAdd(userId: string, nickname: string) {
   const deltaMs = now - session.last_updated_at;
   const minutes = Math.floor(deltaMs / 60000);
   if (minutes > 0) {
-    await addMinutesToUser(
-      userId,
-      nickname,
-      minutes,
-      !!session.is_muted,
-      !!session.is_deaf,
-      !!session.is_alone,
-      session.guild_id
-    );
+    await addMinutesToUser(userId, nickname, minutes, !!session.is_muted, !!session.is_deaf, !!session.is_alone, session.guild_id);
   }
   const durationMinutes = Math.floor((now - session.started_at) / 60000);
 
-  // Track game time if a game was recorded
   if (session.game_name && minutes > 0 && session.guild_id) {
     await _db.runAsync(
       `INSERT INTO user_games (user_id, guild_id, game_name, total_minutes)
@@ -323,7 +308,6 @@ export async function endSessionAndAdd(userId: string, nickname: string) {
     session.game_name
   );
 
-  // Update streak
   if (durationMinutes > 0 && session.guild_id) {
     await updateStreak(userId, session.guild_id);
   }
@@ -344,17 +328,8 @@ export async function updateSessionState(
     const deltaMs = now - session.last_updated_at;
     const minutes = Math.floor(deltaMs / 60000);
     if (minutes > 0) {
-      await addMinutesToUser(
-        userId,
-        nickname,
-        minutes,
-        !!session.is_muted,
-        !!session.is_deaf,
-        !!session.is_alone,
-        session.guild_id
-      );
+      await addMinutesToUser(userId, nickname, minutes, !!session.is_muted, !!session.is_deaf, !!session.is_alone, session.guild_id);
 
-      // Track game time for the elapsed minutes
       if (session.game_name && session.guild_id) {
         await _db.runAsync(
           `INSERT INTO user_games (user_id, guild_id, game_name, total_minutes)
@@ -390,12 +365,10 @@ export async function updateSessionGame(userId: string, gameName: string | null)
   if (!session) return;
 
   const now = Date.now();
-  // Track elapsed time from last update to the previous game (or to the new game if first time)
   if ((session.game_name || gameName) && session.last_updated_at && session.guild_id) {
     const deltaMs = now - session.last_updated_at;
     const minutes = Math.floor(deltaMs / 60000);
     if (minutes > 0) {
-      // Track to the previous game, or to the new game if first time setting a game
       const trackGame = session.game_name || gameName;
       if (trackGame) {
         await _db.runAsync(
@@ -475,6 +448,7 @@ export async function getUserRangeTotal(
   range: string,
   guildId: string | null = null
 ) {
+  // Try history first
   const params: any[] = [userId];
   let query = `SELECT COALESCE(SUM(duration_minutes), 0) AS total FROM voice_sessions_history WHERE user_id = ?`;
 
@@ -489,7 +463,29 @@ export async function getUserRangeTotal(
     params.push(guildId);
   }
 
-  return _db.getAsync(query, ...params);
+  const historyRow: any = await _db.getAsync(query, ...params);
+
+  // Also get from voice_data for backward compatibility (old data that wasn't in history)
+  const resolvedGuildId = guildId || '__global__';
+  // For "total" range, add voice_data total
+  if (range === 'total' || range === 'all') {
+    const vdParams: any[] = [userId];
+    let vdQuery = `SELECT COALESCE(total_time, 0) AS total FROM voice_data WHERE user_id = ?`;
+    if (guildId) {
+      vdQuery += ' AND guild_id = ?';
+      vdParams.push(guildId);
+    } else {
+      vdQuery += ' AND guild_id = ?';
+      vdParams.push('__global__');
+    }
+    const vdRow: any = await _db.getAsync(vdQuery, ...vdParams);
+    const vdTotal = vdRow?.total || 0;
+
+    // Return the larger of the two (handles both old data in voice_data and new data in history)
+    return { total: Math.max(historyRow?.total || 0, vdTotal) };
+  }
+
+  return historyRow;
 }
 
 export async function getUserDailyAggregate(
@@ -537,14 +533,28 @@ export async function getUserStats(userId: string, range: string, guildId: strin
   const totalRow: any = await getUserRangeTotal(userId, range, guildId);
   const dailyRows: any[] = await getUserDailyAggregate(userId, range, guildId);
   const lastSeen = await getUserLastSeen(userId, guildId);
+  // Also check voice_data for lastSeen fallback (for old data without history)
+  if (!lastSeen) {
+    const vd = await _db.getAsync(`SELECT total_time FROM voice_data WHERE user_id = ? AND (guild_id = ? OR guild_id = '__global__')`, userId, guildId || '__global__');
+    if (vd && vd.total_time > 0) {
+      // Use current timestamp as approximate last seen for legacy data
+    }
+  }
 
-  const totalMinutes = totalRow?.total || 0;
-  const daysCount = dailyRows.length;
-  const averageMinutes = daysCount ? Math.round(totalMinutes / daysCount) : 0;
-  const maxDayMinutes = dailyRows.reduce((max, row) => Math.max(max, row.total || 0), 0);
+  // For daily aggregate, fall back to a single "Legacy" day if history is empty but voice_data has data
+  let daysCount = dailyRows.length;
+  let averageMinutes = daysCount ? Math.round((totalRow?.total || 0) / daysCount) : 0;
+  let maxDayMinutes = dailyRows.reduce((max, row) => Math.max(max, row.total || 0), 0);
+
+  // If no history data but voice_data has data, show it as legacy
+  if (daysCount === 0 && (totalRow?.total || 0) > 0) {
+    daysCount = 1;
+    averageMinutes = totalRow?.total || 0;
+    maxDayMinutes = totalRow?.total || 0;
+  }
 
   return {
-    totalMinutes,
+    totalMinutes: totalRow?.total || 0,
     daysCount,
     averageMinutes,
     maxDayMinutes,
@@ -579,7 +589,28 @@ export async function getUserCategoryBreakdown(
     params.push(guildId);
   }
 
-  return _db.getAsync(query, ...params);
+  const breakdown: any = await _db.getAsync(query, ...params);
+
+  // If history is empty but voice_data has data, show total from voice_data as "active"
+  if ((breakdown?.total_time || 0) === 0) {
+    const resolvedGuildId = guildId || '__global__';
+    const vd: any = await _db.getAsync(
+      `SELECT total_time, active_time, muted_time, deafened_time, alone_time FROM voice_data WHERE user_id = ? AND guild_id = ?`,
+      userId,
+      resolvedGuildId
+    );
+    if (vd) {
+      return {
+        muted_time: vd.muted_time || 0,
+        deafened_time: vd.deafened_time || 0,
+        alone_time: vd.alone_time || 0,
+        active_time: vd.active_time || 0,
+        total_time: vd.total_time || 0,
+      };
+    }
+  }
+
+  return breakdown || { muted_time: 0, deafened_time: 0, alone_time: 0, active_time: 0, total_time: 0 };
 }
 
 export async function getTopGames(guildId: string, limit = 10) {
