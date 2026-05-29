@@ -75,13 +75,16 @@ scp -i "$SSH_KEY" -P "$VPS_PORT" -q -C "$PACKAGE" "$VPS_USER@$VPS_HOST:$VPS_PATH
 
 # --- Step 7: Deploy on VPS ---
 step "Deploying on VPS and restarting..."
-ssh -i "$SSH_KEY" -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" bash -s << 'REMOTE'
+# shellcheck disable=SC2087
+ssh -i "$SSH_KEY" -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" bash -s -- "$VPS_PATH" "$DB_PATH" << REMOTE
+  VPS_PATH="\$1"
+  DB_PATH="\$2"
   set -e
-  cd "$VPS_PATH"
+  cd "\$VPS_PATH"
 
   # Backup database
-  if [ -f voice_data.db ]; then
-    cp voice_data.db "voice_data.db.backup.$(date -I)"
+  if [ -f "\$DB_PATH" ]; then
+    cp "\$DB_PATH" "\$DB_PATH.backup.\$(date -I)"
     echo "  >> Database backed up"
   fi
 
@@ -96,9 +99,9 @@ ssh -i "$SSH_KEY" -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" bash -s << 'REMOTE'
     echo "  >> Bot restarted with pm2"
   else
     # Fallback: kill old, start new
-    kill "$(cat /tmp/counterguy.pid 2>/dev/null)" 2>/dev/null || true
+    kill "\$(cat /tmp/counterguy.pid 2>/dev/null)" 2>/dev/null || true
     nohup node dist/index.js > /tmp/counterguy.log 2>&1 &
-    echo $! > /tmp/counterguy.pid
+    echo \$! > /tmp/counterguy.pid
     echo "  >> Bot restarted with nohup"
   fi
 
