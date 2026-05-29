@@ -59,6 +59,20 @@ async function registerSlashCommands() {
   }
 }
 
+// Handle client-level errors gracefully instead of crashing
+client.on('error', (err) => {
+  console.error('Client error (non-fatal):', err.message);
+});
+
+client.on('shardError', (err) => {
+  console.error('Shard error (non-fatal):', err.message);
+});
+
+// Handle disconnects gracefully
+client.on('shardDisconnect', (event, shardId) => {
+  console.log(`Shard ${shardId} disconnected, code=${event.code}. Will auto-reconnect.`);
+});
+
 async function start() {
   const dbFile = process.env.DB_FILE || './voice_data.db';
   const backupOnStart =
@@ -66,18 +80,47 @@ async function start() {
     (process.env.DB_BACKUP_ON_START || '').toLowerCase() === 'true';
   await db.init(dbFile, { backupOnStart });
   await registerEvents();
-  await registerSlashCommands();
 
   const token = process.env.DISCORD_TOKEN;
   if (!token) {
     console.error('Missing DISCORD_TOKEN. Set it in environment or .env file.');
-    process.exit(1);
+    setTimeout(start, 60000);
+    return;
   }
 
-  client.login(token).catch((err) => {
-    console.error('Failed to login to Discord:', err);
-    process.exit(1);
-  });
+  // Register slash commands before login (works with just the token via REST)
+  await registerSlashCommands().catch(() => {});
+
+  // Login once — no retry loop.
+  // If login succeeds but disconnects, discord.js auto-reconnects on its own.
+  // If login fails (wrong token, rate limit), we log and wait, then retry ONCE.
+  try {
+    await client.login(token);
+    console.log('Logged in as ' + client.user?.tag);
+  } catch (err: any) {
+    console.error('Login failed:', err.message);
+    // Only retry on rate-limit once
+    if (err.message?.includes('Not enough sessions') || err.message?.includes('sessions remaining')) {
+      const match = err.message.match(/resets at (\S+)/);
+      if (match) {
+        const resetTime = new Date(match[1]).getTime();
+        const waitMs = Math.max(resetTime - Date.now() + 1000, 60000);
+        console.log(`Rate limited. Waiting ${Math.round(waitMs/60000)} min before one retry...`);
+        setTimeout(async () => {
+          try {
+            await client.login(token);
+            console.log('Logged in after rate-limit wait');
+          } catch (e2: any) {
+            console.error('Login still failing after wait:', e2.message);
+            console.log('Will stay alive but not connected. Fix intents or token.');
+          }
+        }, waitMs);
+      }
+    } else {
+      // Non-rate-limit error (wrong token, etc) — stay alive, don't spam login
+      console.log('Login failed. Will stay alive but not connected. Check your token and intents in Discord Developer Portal.');
+    }
+  }
 }
 
 start();

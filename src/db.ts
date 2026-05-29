@@ -414,8 +414,8 @@ export async function getTop(category: string, limit = 20, guildId: string | nul
   const params: any[] = [limit];
   let whereClause = `WHERE ${col} > 0`;
   if (guildId) {
-    whereClause += ' AND guild_id = ?';
-    params.unshift(guildId);
+    whereClause += ' AND (guild_id = ? OR guild_id = ?)';
+    params.unshift(guildId, '__global__');
   }
 
   return _db.allAsync(
@@ -466,14 +466,14 @@ export async function getUserRangeTotal(
   const historyRow: any = await _db.getAsync(query, ...params);
 
   // Also get from voice_data for backward compatibility (old data that wasn't in history)
-  const resolvedGuildId = guildId || '__global__';
   // For "total" range, add voice_data total
   if (range === 'total' || range === 'all') {
     const vdParams: any[] = [userId];
-    let vdQuery = `SELECT COALESCE(total_time, 0) AS total FROM voice_data WHERE user_id = ?`;
+    let vdQuery = `SELECT COALESCE(SUM(total_time), 0) AS total FROM voice_data WHERE user_id = ?`;
     if (guildId) {
-      vdQuery += ' AND guild_id = ?';
-      vdParams.push(guildId);
+      // Include both guild-specific records AND legacy __global__ records
+      vdQuery += ' AND (guild_id = ? OR guild_id = ?)';
+      vdParams.push(guildId, '__global__');
     } else {
       vdQuery += ' AND guild_id = ?';
       vdParams.push('__global__');
@@ -481,7 +481,7 @@ export async function getUserRangeTotal(
     const vdRow: any = await _db.getAsync(vdQuery, ...vdParams);
     const vdTotal = vdRow?.total || 0;
 
-    // Return the larger of the two (handles both old data in voice_data and new data in history)
+    // Return the larger of history vs voice_data total
     return { total: Math.max(historyRow?.total || 0, vdTotal) };
   }
 
@@ -593,12 +593,16 @@ export async function getUserCategoryBreakdown(
 
   // If history is empty but voice_data has data, show total from voice_data as "active"
   if ((breakdown?.total_time || 0) === 0) {
-    const resolvedGuildId = guildId || '__global__';
-    const vd: any = await _db.getAsync(
-      `SELECT total_time, active_time, muted_time, deafened_time, alone_time FROM voice_data WHERE user_id = ? AND guild_id = ?`,
-      userId,
-      resolvedGuildId
-    );
+    const vdParams: any[] = [userId];
+    let vdQuery = `SELECT total_time, active_time, muted_time, deafened_time, alone_time FROM voice_data WHERE user_id = ?`;
+    if (guildId) {
+      vdQuery += ' AND (guild_id = ? OR guild_id = ?)';
+      vdParams.push(guildId, '__global__');
+    } else {
+      vdQuery += ' AND guild_id = ?';
+      vdParams.push('__global__');
+    }
+    const vd: any = await _db.getAsync(vdQuery, ...vdParams);
     if (vd) {
       return {
         muted_time: vd.muted_time || 0,
