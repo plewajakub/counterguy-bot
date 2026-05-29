@@ -4,6 +4,52 @@ import { promisify } from 'util';
 
 let _db: any;
 
+async function migrateVoiceData() {
+  // Check if voice_data has OLD schema (single-column PK)
+  const tableInfo: any[] = await _db.allAsync(`PRAGMA table_info(voice_data)`);
+  const pkColumns = tableInfo.filter((col: any) => col.pk > 0);
+  const isOldSchema = pkColumns.length === 1 && pkColumns[0].name === 'user_id';
+
+  if (!isOldSchema) return;
+
+  console.log('Migrating voice_data schema from old format...');
+
+  // Delete rows with missing guild_id (they would break the new composite PK)
+  await _db.runAsync(`DELETE FROM voice_data WHERE guild_id IS NULL`);
+
+  await _db.runAsync(`
+    CREATE TABLE voice_data_new (
+      user_id TEXT NOT NULL,
+      nickname TEXT,
+      guild_id TEXT NOT NULL,
+      total_time INTEGER DEFAULT 0,
+      muted_time INTEGER DEFAULT 0,
+      deafened_time INTEGER DEFAULT 0,
+      alone_time INTEGER DEFAULT 0,
+      active_time INTEGER DEFAULT 0,
+      PRIMARY KEY (user_id, guild_id)
+    )
+  `);
+
+  await _db.runAsync(`
+    INSERT INTO voice_data_new (user_id, nickname, guild_id, total_time, muted_time, deafened_time, alone_time, active_time)
+    SELECT user_id, nickname, guild_id, total_time, muted_time, deafened_time, alone_time, active_time
+    FROM voice_data
+  `);
+
+  await _db.runAsync(`DROP TABLE voice_data`);
+  await _db.runAsync(`ALTER TABLE voice_data_new RENAME TO voice_data`);
+  console.log('Migration complete.');
+}
+
+async function ensureColumn(table: string, column: string, def: string) {
+  const columns: any[] = await _db.allAsync(`PRAGMA table_info(${table})`);
+  const hasColumn = columns.some((c: any) => c.name === column);
+  if (!hasColumn) {
+    await _db.runAsync(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`);
+  }
+}
+
 export async function init(filename: string, opts?: { backupOnStart?: boolean }) {
   if (filename !== ':memory:' && opts?.backupOnStart && fs.existsSync(filename)) {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -31,6 +77,9 @@ export async function init(filename: string, opts?: { backupOnStart?: boolean })
     )
   `);
 
+  // Migrate old voice_data schema if needed (single-column PK → composite PK)
+  await migrateVoiceData();
+
   await _db.runAsync(`
     CREATE TABLE IF NOT EXISTS voice_sessions (
       user_id TEXT PRIMARY KEY,
@@ -40,9 +89,13 @@ export async function init(filename: string, opts?: { backupOnStart?: boolean })
       last_updated_at INTEGER,
       is_muted INTEGER DEFAULT 0,
       is_deaf INTEGER DEFAULT 0,
-      is_alone INTEGER DEFAULT 0
+      is_alone INTEGER DEFAULT 0,
+      game_name TEXT
     )
   `);
+
+  // Add game_name column to old voice_sessions if missing
+  await ensureColumn('voice_sessions', 'game_name', 'TEXT');
 
   await _db.runAsync(`
     CREATE TABLE IF NOT EXISTS voice_sessions_history (
@@ -55,7 +108,32 @@ export async function init(filename: string, opts?: { backupOnStart?: boolean })
       duration_minutes INTEGER,
       is_muted INTEGER DEFAULT 0,
       is_deaf INTEGER DEFAULT 0,
-      is_alone INTEGER DEFAULT 0
+      is_alone INTEGER DEFAULT 0,
+      game_name TEXT
+    )
+  `);
+
+  // Add game_name column to old voice_sessions_history if missing
+  await ensureColumn('voice_sessions_history', 'game_name', 'TEXT');
+
+  await _db.runAsync(`
+    CREATE TABLE IF NOT EXISTS user_games (
+      user_id TEXT NOT NULL,
+      guild_id TEXT NOT NULL,
+      game_name TEXT NOT NULL,
+      total_minutes INTEGER DEFAULT 0,
+      PRIMARY KEY (user_id, guild_id, game_name)
+    )
+  `);
+
+  await _db.runAsync(`
+    CREATE TABLE IF NOT EXISTS voice_streaks (
+      user_id TEXT NOT NULL,
+      guild_id TEXT NOT NULL,
+      current_streak INTEGER DEFAULT 0,
+      longest_streak INTEGER DEFAULT 0,
+      last_active_date TEXT,
+      PRIMARY KEY (user_id, guild_id)
     )
   `);
 }
@@ -139,11 +217,12 @@ async function archiveSessionRecord(
   durationMinutes: number,
   isMuted: boolean,
   isDeaf: boolean,
-  isAlone: boolean
+  isAlone: boolean,
+  gameName: string | null = null
 ) {
   await _db.runAsync(
-    `INSERT INTO voice_sessions_history (user_id, guild_id, channel_id, started_at, ended_at, duration_minutes, is_muted, is_deaf, is_alone)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO voice_sessions_history (user_id, guild_id, channel_id, started_at, ended_at, duration_minutes, is_muted, is_deaf, is_alone, game_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     userId,
     guildId || null,
     channelId || null,
@@ -152,7 +231,49 @@ async function archiveSessionRecord(
     durationMinutes,
     isMuted ? 1 : 0,
     isDeaf ? 1 : 0,
-    isAlone ? 1 : 0
+    isAlone ? 1 : 0,
+    gameName || null
+  );
+}
+
+async function updateStreak(userId: string, guildId: string | null) {
+  if (!guildId) return;
+  const today = new Date().toISOString().split('T')[0]; // 'YYYY-MM-DD'
+
+  const row = await _db.getAsync(
+    `SELECT current_streak, longest_streak, last_active_date FROM voice_streaks WHERE user_id = ? AND guild_id = ?`,
+    userId,
+    guildId
+  );
+
+  if (!row) {
+    await _db.runAsync(
+      `INSERT INTO voice_streaks (user_id, guild_id, current_streak, longest_streak, last_active_date) VALUES (?, ?, 1, 1, ?)`,
+      userId,
+      guildId,
+      today
+    );
+    return;
+  }
+
+  if (row.last_active_date === today) {
+    // Already counted today, do nothing
+    return;
+  }
+
+  const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+  const isConsecutive = row.last_active_date === yesterday;
+
+  const newCurrent = isConsecutive ? (row.current_streak || 0) + 1 : 1;
+  const newLongest = Math.max(newCurrent, row.longest_streak || 0);
+
+  await _db.runAsync(
+    `UPDATE voice_streaks SET current_streak = ?, longest_streak = ?, last_active_date = ? WHERE user_id = ? AND guild_id = ?`,
+    newCurrent,
+    newLongest,
+    today,
+    userId,
+    guildId
   );
 }
 
@@ -174,6 +295,21 @@ export async function endSessionAndAdd(userId: string, nickname: string) {
     );
   }
   const durationMinutes = Math.floor((now - session.started_at) / 60000);
+
+  // Track game time if a game was recorded
+  if (session.game_name && minutes > 0 && session.guild_id) {
+    await _db.runAsync(
+      `INSERT INTO user_games (user_id, guild_id, game_name, total_minutes)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(user_id, guild_id, game_name) DO UPDATE SET
+         total_minutes = user_games.total_minutes + excluded.total_minutes`,
+      userId,
+      session.guild_id,
+      session.game_name,
+      minutes
+    );
+  }
+
   await archiveSessionRecord(
     userId,
     session.guild_id,
@@ -183,8 +319,15 @@ export async function endSessionAndAdd(userId: string, nickname: string) {
     durationMinutes,
     !!session.is_muted,
     !!session.is_deaf,
-    !!session.is_alone
+    !!session.is_alone,
+    session.game_name
   );
+
+  // Update streak
+  if (durationMinutes > 0 && session.guild_id) {
+    await updateStreak(userId, session.guild_id);
+  }
+
   await clearSession(userId);
 }
 
@@ -210,12 +353,26 @@ export async function updateSessionState(
         !!session.is_alone,
         session.guild_id
       );
+
+      // Track game time for the elapsed minutes
+      if (session.game_name && session.guild_id) {
+        await _db.runAsync(
+          `INSERT INTO user_games (user_id, guild_id, game_name, total_minutes)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(user_id, guild_id, game_name) DO UPDATE SET
+             total_minutes = user_games.total_minutes + excluded.total_minutes`,
+          userId,
+          session.guild_id,
+          session.game_name,
+          minutes
+        );
+      }
     }
   }
 
   await _db.runAsync(
-    `INSERT OR REPLACE INTO voice_sessions (user_id, guild_id, channel_id, started_at, last_updated_at, is_muted, is_deaf, is_alone)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO voice_sessions (user_id, guild_id, channel_id, started_at, last_updated_at, is_muted, is_deaf, is_alone, game_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     userId,
     session ? session.guild_id : null,
     session ? session.channel_id : null,
@@ -223,7 +380,43 @@ export async function updateSessionState(
     now,
     isMuted ? 1 : 0,
     isDeaf ? 1 : 0,
-    isAlone ? 1 : 0
+    isAlone ? 1 : 0,
+    session ? session.game_name : null
+  );
+}
+
+export async function updateSessionGame(userId: string, gameName: string | null) {
+  const session = await getSession(userId);
+  if (!session) return;
+
+  const now = Date.now();
+  // Track elapsed time from last update to the previous game (or to the new game if first time)
+  if ((session.game_name || gameName) && session.last_updated_at && session.guild_id) {
+    const deltaMs = now - session.last_updated_at;
+    const minutes = Math.floor(deltaMs / 60000);
+    if (minutes > 0) {
+      // Track to the previous game, or to the new game if first time setting a game
+      const trackGame = session.game_name || gameName;
+      if (trackGame) {
+        await _db.runAsync(
+          `INSERT INTO user_games (user_id, guild_id, game_name, total_minutes)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(user_id, guild_id, game_name) DO UPDATE SET
+             total_minutes = user_games.total_minutes + excluded.total_minutes`,
+          userId,
+          session.guild_id,
+          trackGame,
+          minutes
+        );
+      }
+    }
+  }
+
+  await _db.runAsync(
+    `UPDATE voice_sessions SET game_name = ?, last_updated_at = ? WHERE user_id = ?`,
+    gameName || null,
+    now,
+    userId
   );
 }
 
@@ -387,6 +580,36 @@ export async function getUserCategoryBreakdown(
   }
 
   return _db.getAsync(query, ...params);
+}
+
+export async function getTopGames(guildId: string, limit = 10) {
+  return _db.allAsync(
+    `SELECT ug.game_name, SUM(ug.total_minutes) as total_minutes,
+            COUNT(DISTINCT ug.user_id) as player_count
+     FROM user_games ug
+     WHERE ug.guild_id = ?
+     GROUP BY ug.game_name
+     ORDER BY total_minutes DESC
+     LIMIT ?`,
+    guildId,
+    limit
+  );
+}
+
+export async function getUserGameStats(userId: string, guildId: string) {
+  return _db.allAsync(
+    `SELECT game_name, total_minutes FROM user_games WHERE user_id = ? AND guild_id = ? ORDER BY total_minutes DESC`,
+    userId,
+    guildId
+  );
+}
+
+export async function getUserStreaks(userId: string, guildId: string) {
+  return _db.getAsync(
+    `SELECT current_streak, longest_streak, last_active_date FROM voice_streaks WHERE user_id = ? AND guild_id = ?`,
+    userId,
+    guildId
+  );
 }
 
 export async function getSessionHistory(userId: string, limit = 10) {

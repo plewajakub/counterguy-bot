@@ -86,18 +86,53 @@ describe('db module', () => {
     await db.addMinutesToUser('u2', 'User2#0002', 20, false, false, false, 'guild2');
     await db.addMinutesToUser('u1', 'User1#0001', 30, false, false, false, 'guild2');
 
-    // Only guild1 records
     const g1 = await db.getTop('total', 20, 'guild1');
     expect(g1).toHaveLength(1);
     expect(g1[0].user_id).toBe('u1');
     expect(g1[0].time).toBe(10);
 
-    // Only guild2 records
     const g2 = await db.getTop('total', 20, 'guild2');
     expect(g2).toHaveLength(2);
 
-    // All records (no guild filter)
     const all = await db.getTop('total', 20);
     expect(all).toHaveLength(3);
+  });
+
+  test('getTopGames returns most played games across guild', async () => {
+    await db.init(':memory:');
+    // Insert directly into user_games table via a session lifecycle:
+    // We can test getTopGames by simulating game tracking.
+    // The game tracking in updateSessionState fires when minutes > 0 and game_name is set.
+    // We'll create a session with game_name already set by using updateSessionGame
+    // which resets last_updated_at. Instead, let's just verify the table was created
+    // and query works by inserting a manual row via SQL through the session system.
+
+    // Create a session, set game via updateSessionGame, then call updateSessionState
+    // which will capture the delta from session start (with game) and track it.
+    const now = Date.now();
+    await db.upsertSession('gamer1', 'guild1', 'A', now - 120 * 60000, false, false, false);
+    // Set game on the session (this resets last_updated_at to now)
+    await db.updateSessionGame('gamer1', 'Valorant');
+    // Now call updateSessionState - this will track ~120 min of Valorant
+    await db.updateSessionState('gamer1', 'Gamer#0001', false, false, false);
+
+    const games = await db.getTopGames('guild1');
+    expect(games.length).toBeGreaterThanOrEqual(1);
+    expect(games[0].game_name).toBe('Valorant');
+    expect(games[0].total_minutes).toBeGreaterThanOrEqual(119);
+    expect(games[0].player_count).toBeGreaterThanOrEqual(1);
+  });
+
+  test('getUserStreaks returns streak data after session', async () => {
+    await db.init(':memory:');
+    const now = Date.now();
+
+    await db.upsertSession('u_streak', 'guild1', 'A', now - 10 * 60000, false, false, false);
+    await db.endSessionAndAdd('u_streak', 'Streaker#0001');
+
+    const streak = await db.getUserStreaks('u_streak', 'guild1');
+    expect(streak).not.toBeNull();
+    expect(streak.current_streak).toBe(1);
+    expect(streak.longest_streak).toBe(1);
   });
 });
